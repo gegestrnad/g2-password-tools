@@ -1,4 +1,4 @@
-# g2-password-tools
+# G2 Password Tools
 A small GUI password/passphrase generator &amp; string randomizer built with Go and Fyne.
 
 Features
