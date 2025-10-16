@@ -1,4 +1,4 @@
-module github.com/you/passrand
+module github.com/gegestrnad/g2-password-tools
 
 go 1.24.1
 
