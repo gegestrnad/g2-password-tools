@@ -1,9 +1,15 @@
 # G2 Password Tools
 A small GUI password/passphrase generator &amp; string randomizer built with Go and Fyne.
 
+<p align="center">
+  <img src="https://imgur.com/JlDf4pp.jpg" alt="Password Tools screenshot" width="400">
+</p>
+
+
 Features
+- Password generator
 - Passphrase generator (wordlist-based)
-- String randomizer (case changes, leet, separators)
+- String/Phrase randomizer (case changes, leet, separators)
 - Export passphrases and copy to clipboard
 - Embedded application icon (`icon.ico`) via go:embed. :contentReference[oaicite:3]{index=3}
 
