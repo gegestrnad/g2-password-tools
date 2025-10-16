@@ -19,6 +19,6 @@ Make sure you have Go installed (1.20+ recommended) and `fyne` dependencies will
 ```bash
 go mod init github.com/gegestrnad/g2-password-tools
 go mod tidy
-go build -ldflags "-H=windowsgui -s -w" -o passrand.exe Main.go
+go build -ldflags "-H=windowsgui -s -w" -o g2-password-tools.exe Main.go
 # Optional: compress with UPX
-upx --best --lzma passrand.exe
+upx --best --lzma g2-password-tools.exe
