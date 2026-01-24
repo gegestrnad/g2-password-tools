@@ -11,7 +11,6 @@ Features
 - Passphrase generator (wordlist-based)
 - String/Phrase randomizer (case changes, leet, separators)
 - Export passphrases and copy to clipboard
-- Embedded application icon (`icon.ico`) via go:embed. :contentReference[oaicite:3]{index=3}
 
 ## Files included
 - `Main.go` — main application source. :contentReference[oaicite:4]{index=4}
