@@ -1,52 +1,54 @@
-name: Release
+name: Build Release
 
 on:
-  push:
-    tags:
-      - "v*"
-
-permissions:
-  contents: write
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag/version (e.g., v1.0.0)'
+        required: false
+        default: ''
 
 jobs:
-  build-windows:
-    name: Build Windows release
+  build:
     runs-on: windows-latest
+    permissions:
+      contents: write
 
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v4
         with:
-          go-version-file: go.mod
-          cache: true
+          go-version: '1.24.1'
 
-      - name: Set up MinGW
-        uses: egor-tensin/setup-mingw@v2
-        with:
-          platform: x64
-
-      - name: Test
-        run: go test ./...
-
-      - name: Build Windows executable
-        shell: pwsh
+      - name: Install dependencies
         run: |
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
-          go build -trimpath -ldflags "-H=windowsgui -s -w" -o dist/g2-password-tools-windows-amd64.exe .
+          go mod download
+          go mod verify
 
-      - name: Generate checksum
-        shell: pwsh
+      - name: Build executable
         run: |
-          $artifact = "dist/g2-password-tools-windows-amd64.exe"
-          $hash = (Get-FileHash -Algorithm SHA256 $artifact).Hash.ToLowerInvariant()
-          "$hash  g2-password-tools-windows-amd64.exe" | Out-File -Encoding ascii "dist/g2-password-tools-windows-amd64.exe.sha256"
+          $env:CGO_ENABLED = "1"
+          go build -o g2-password-tools.exe -ldflags="-H windowsgui" .
+        shell: pwsh
 
-      - name: Publish GitHub release
-        uses: softprops/action-gh-release@v2
+      - name: Create release
+        if: github.event.inputs.release_tag != ''
+        uses: softprops/action-gh-release@v1
         with:
-          files: |
-            dist/g2-password-tools-windows-amd64.exe
-            dist/g2-password-tools-windows-amd64.exe.sha256
+          files: g2-password-tools.exe
+          tag_name: ${{ github.event.inputs.release_tag }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifact
+        if: github.event.inputs.release_tag == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: g2-password-tools-exe
+          path: g2-password-tools.exe
+          retention-days: 30
