@@ -1,12 +1,15 @@
 name: Build Release
 
 on:
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Release tag/version (e.g., v1.0.0)'
+        description: "Release tag/version (e.g., v1.0.0)"
         required: false
-        default: ''
+        default: ""
 
 jobs:
   build:
@@ -21,7 +24,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
-          go-version: '1.24.1'
+          go-version: "1.24.1"
 
       - name: Set up MinGW
         uses: egor-tensin/setup-mingw@v2
@@ -39,27 +42,61 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      - name: Build executable
-        run: |
-          $env:CGO_ENABLED = "1"
-          go build -o g2-password-tools.exe -ldflags="-H windowsgui" .
+      - name: Resolve release tag
+        id: release
         shell: pwsh
+        run: |
+          $releaseTag = ""
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $releaseTag = "${{ github.ref_name }}"
+          } elseif ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $releaseTag = "${{ github.event.inputs.release_tag }}"
+          }
+          "tag=$releaseTag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Build executable
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $env:CGO_ENABLED = "1"
+          go build -trimpath -ldflags "-H=windowsgui -s -w" -o dist/g2-password-tools-windows-amd64.exe .
+
+      - name: Install UPX
+        shell: pwsh
+        run: choco install upx -y --no-progress
+
+      - name: Compress executable
+        shell: pwsh
+        run: |
+          upx --best --lzma dist/g2-password-tools-windows-amd64.exe
+          upx -t dist/g2-password-tools-windows-amd64.exe
+
+      - name: Generate checksum
+        shell: pwsh
+        run: |
+          $artifact = "dist/g2-password-tools-windows-amd64.exe"
+          $hash = (Get-FileHash -Algorithm SHA256 $artifact).Hash.ToLowerInvariant()
+          "$hash  g2-password-tools-windows-amd64.exe" | Out-File -Encoding ascii "dist/g2-password-tools-windows-amd64.exe.sha256"
 
       - name: Create release
-        if: github.event.inputs.release_tag != ''
+        if: steps.release.outputs.tag != ''
         uses: softprops/action-gh-release@v1
         with:
-          files: g2-password-tools.exe
-          tag_name: ${{ github.event.inputs.release_tag }}
+          files: |
+            dist/g2-password-tools-windows-amd64.exe
+            dist/g2-password-tools-windows-amd64.exe.sha256
+          tag_name: ${{ steps.release.outputs.tag }}
           draft: false
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload artifact
-        if: github.event.inputs.release_tag == ''
+        if: steps.release.outputs.tag == ''
         uses: actions/upload-artifact@v4
         with:
-          name: g2-password-tools-exe
-          path: g2-password-tools.exe
+          name: g2-password-tools-windows-amd64
+          path: |
+            dist/g2-password-tools-windows-amd64.exe
+            dist/g2-password-tools-windows-amd64.exe.sha256
           retention-days: 30

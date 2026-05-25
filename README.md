@@ -26,7 +26,7 @@ Make sure Go is installed. The module is already initialized, so fetch dependenc
 
 ```bash
 go mod tidy
-go build -ldflags "-H=windowsgui -s -w" -o g2-password-tools.exe Main.go
+go build -trimpath -ldflags "-H=windowsgui -s -w" -o g2-password-tools.exe .
 ```
 
 For development validation:
@@ -38,14 +38,16 @@ go vet ./...
 
 ## Release
 
-GitHub Actions builds the Windows executable automatically when a version tag is pushed.
+GitHub Actions builds a UPX-compressed Windows executable and publishes it to GitHub Releases when a version tag is pushed:
 
 ```bash
 git tag v1.0.0
 git push origin v1.0.0
 ```
 
-The workflow creates a GitHub Release and attaches:
+You can also run the `Build Release` workflow manually and provide `release_tag`, such as `v1.0.0`, to publish a release. Manual runs without `release_tag` upload the build as a workflow artifact instead.
+
+Release assets:
 
 - `g2-password-tools-windows-amd64.exe`
 - `g2-password-tools-windows-amd64.exe.sha256`
