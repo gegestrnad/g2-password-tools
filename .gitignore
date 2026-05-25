@@ -1,0 +1,25 @@
+# Build output
+dist/
+build/
+*.exe
+*.test
+*.out
+*.prof
+coverage.*
+
+# Local Go caches
+.codex-temp-go-*/
+.gocache/
+.gomodcache/
+
+# Runtime/export output
+passphrases.txt
+*.log
+
+# Editor and OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+Thumbs.db
+Desktop.ini

@@ -1,14 +1,15 @@
 package main
 
 import (
+	"crypto/rand"
+	_ "embed"
 	"encoding/json"
-	    _ "embed"
+	"errors"
 	"fmt"
-	"io/ioutil"
-	"math/rand"
+	"log"
+	"math/big"
 	"os"
 	"strings"
-	"time"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
@@ -18,55 +19,63 @@ import (
 )
 
 var (
-	wordList      []string
-	leetMap       map[string][]string
-	symbols       = []rune{'!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '-', '_', '+', '='}
-	wordlistFile  = "wordlist.txt"
-	leetmapFile   = "leetmap.json"
-	configFile    = "config.json"
-	cfg           Config
+	wordList     []string
+	leetMap      map[string][]string
+	symbols      = []rune{'!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '-', '_', '+', '='}
+	wordlistFile = "wordlist.txt"
+	leetmapFile  = "leetmap.json"
+	configFile   = "config.json"
+	cfg          Config
 )
+
+const (
+	lowercaseChars      = "abcdefghijklmnopqrstuvwxyz"
+	uppercaseChars      = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	numberChars         = "0123456789"
+	passwordSymbolChars = "!@#$%^&*()-_=+[]{};:,.<>?/\\|"
+)
+
+var (
+	similarChars   = []rune{'o', 'O', '0', 'i', 'I', 'l', '1'}
+	ambiguousChars = []rune{'~', ';', ':', '.', '{', '}', '<', '>', '[', ']', '(', ')', '/', '\\', '\'', '`'}
+)
+
 //go:embed icon.ico
 var iconData []byte
 
-
 type Config struct {
-// Passphrase generator
-PassWordCount int
-PassSeparator string
-PassRandomCase bool
-PassNumbers bool
-PassSymbols bool
-PassLeet bool
-PassLeetProb float64
+	// Passphrase generator
+	PassWordCount  int
+	PassSeparator  string
+	PassRandomCase bool
+	PassNumbers    bool
+	PassSymbols    bool
+	PassLeet       bool
+	PassLeetProb   float64
 
+	// String randomizer
+	StringSeparator  string
+	StringRandomCase bool
+	StringInvertCase bool
+	StringLeet       bool
+	StringLeetProb   float64
 
-// String randomizer
-StringSeparator string
-StringRandomCase bool
-StringInvertCase bool
-StringLeet bool
-StringLeetProb float64
-
-
-// Password generator (NEW)
-PassGenLength int
-PassGenLower bool
-PassGenUpper bool
-PassGenNumber bool
-PassGenSymbol bool
-PassGenInclude string
-PassGenExclude string
-PassGenBegin string
-PassGenEnd string
-PassGenExcludeSimilar bool
-PassGenExcludeAmbiguous bool
-PassGenNoDuplicate bool
-	
+	// Password generator
+	PassGenLength           int
+	PassGenLower            bool
+	PassGenUpper            bool
+	PassGenNumber           bool
+	PassGenSymbol           bool
+	PassGenInclude          string
+	PassGenExclude          string
+	PassGenBegin            string
+	PassGenEnd              string
+	PassGenExcludeSimilar   bool
+	PassGenExcludeAmbiguous bool
+	PassGenNoDuplicate      bool
 }
 
 func main() {
-	rand.Seed(time.Now().UnixNano())
 	loadOrCreateWordList()
 	loadOrCreateLeetMap()
 	loadOrCreateConfig()
@@ -79,11 +88,11 @@ func main() {
 	passphraseTab := buildPassphraseTab(myWindow)
 	stringTab := buildStringRandomizerTab(myWindow)
 
-tabs := container.NewAppTabs(
-container.NewTabItem("Password Generator", passwordTab), // NEW TAB ENTRY
-container.NewTabItem("Passphrase Generator", passphraseTab),
-container.NewTabItem("String Randomizer", stringTab),
-)
+	tabs := container.NewAppTabs(
+		container.NewTabItem("Password Generator", passwordTab),
+		container.NewTabItem("Passphrase Generator", passphraseTab),
+		container.NewTabItem("String Randomizer", stringTab),
+	)
 	tabs.SetTabLocation(container.TabLocationTop)
 
 	myWindow.SetContent(tabs)
@@ -140,7 +149,10 @@ func buildPassphraseTab(myWindow fyne.Window) fyne.CanvasObject {
 		for i := 0; i < 20; i++ {
 			lines = append(lines, generatePassphrase(strToInt(wordCountEntry.Text, 4), separatorEntry.Text, randomCaseCheck.Checked, numbersCheck.Checked, symbolsCheck.Checked, leetCheck.Checked, prob))
 		}
-		ioutil.WriteFile("passphrases.txt", []byte(strings.Join(lines, "\n")), 0644)
+		if err := os.WriteFile("passphrases.txt", []byte(strings.Join(lines, "\n")), 0644); err != nil {
+			dialog.ShowError(err, myWindow)
+			return
+		}
 		dialog.ShowInformation("Exported", "20 passphrases saved to passphrases.txt", myWindow)
 	})
 
@@ -221,7 +233,11 @@ func generatePassphrase(count int, sep string, randCase, numbers, symbolsOn, lee
 	}
 	words := make([]string, count)
 	for i := 0; i < count; i++ {
-		words[i] = wordList[rand.Intn(len(wordList))]
+		index, err := secureRandInt(len(wordList))
+		if err != nil {
+			return ""
+		}
+		words[i] = wordList[index]
 	}
 	pass := strings.Join(words, sep)
 	if randCase {
@@ -258,7 +274,11 @@ func randomizeString(s, sep string, randCase, invertCase, leet bool, leetProb fl
 func applyRandomCase(s string) string {
 	runes := []rune(s)
 	for i := range runes {
-		if rand.Intn(2) == 0 {
+		flip, err := secureRandBool()
+		if err != nil {
+			return s
+		}
+		if flip {
 			r := runes[i]
 			if 'a' <= r && r <= 'z' {
 				runes[i] = r - 32
@@ -283,22 +303,44 @@ func invertCaseString(s string) string {
 }
 
 func insertRandomNumbers(s string, minCount int) string {
-	count := minCount + rand.Intn(3)
+	extra, err := secureRandInt(3)
+	if err != nil {
+		return s
+	}
+	count := minCount + extra
 	runes := []rune(s)
 	for i := 0; i < count; i++ {
-		pos := rand.Intn(len(runes) + 1)
-		num := rune('0' + rand.Intn(10))
+		pos, err := secureRandInt(len(runes) + 1)
+		if err != nil {
+			return string(runes)
+		}
+		digit, err := secureRandInt(10)
+		if err != nil {
+			return string(runes)
+		}
+		num := rune('0' + digit)
 		runes = append(runes[:pos], append([]rune{num}, runes[pos:]...)...)
 	}
 	return string(runes)
 }
 
 func insertRandomSymbols(s string, minCount int) string {
-	count := minCount + rand.Intn(3)
+	extra, err := secureRandInt(3)
+	if err != nil {
+		return s
+	}
+	count := minCount + extra
 	runes := []rune(s)
 	for i := 0; i < count; i++ {
-		pos := rand.Intn(len(runes) + 1)
-		sym := symbols[rand.Intn(len(symbols))]
+		pos, err := secureRandInt(len(runes) + 1)
+		if err != nil {
+			return string(runes)
+		}
+		index, err := secureRandInt(len(symbols))
+		if err != nil {
+			return string(runes)
+		}
+		sym := symbols[index]
 		runes = append(runes[:pos], append([]rune{sym}, runes[pos:]...)...)
 	}
 	return string(runes)
@@ -309,8 +351,16 @@ func applyLeet(s string, prob float64) string {
 	for i, r := range runes {
 		strR := string(r)
 		if vals, ok := leetMap[strR]; ok {
-			if rand.Float64() < prob {
-				runes[i] = []rune(vals[rand.Intn(len(vals))])[0]
+			roll, err := secureRandFloat64()
+			if err != nil {
+				return s
+			}
+			if roll < prob {
+				index, err := secureRandInt(len(vals))
+				if err != nil {
+					return s
+				}
+				runes[i] = []rune(vals[index])[0]
 			}
 		}
 	}
@@ -321,9 +371,15 @@ func applyLeet(s string, prob float64) string {
 func loadOrCreateWordList() {
 	if _, err := os.Stat(wordlistFile); os.IsNotExist(err) {
 		defaultWords := "apple banana cherry dog elephant frog grape hat igloo juice kiwi lemon mango nut orange pear queen rabbit snake tiger umbrella violin wolf xylophone yak zebra"
-		ioutil.WriteFile(wordlistFile, []byte(defaultWords), 0644)
+		if err := os.WriteFile(wordlistFile, []byte(defaultWords), 0644); err != nil {
+			log.Printf("could not create wordlist: %v", err)
+		}
 	}
-	data, _ := ioutil.ReadFile(wordlistFile)
+	data, err := os.ReadFile(wordlistFile)
+	if err != nil {
+		log.Printf("could not read wordlist: %v", err)
+		return
+	}
 	wordList = strings.Fields(string(data))
 }
 
@@ -333,38 +389,104 @@ func loadOrCreateLeetMap() {
 			"a": {"4", "@"}, "e": {"3"}, "i": {"1", "!"}, "o": {"0"}, "s": {"5", "$"}, "t": {"7"},
 		}
 		b, _ := json.MarshalIndent(defaultLeet, "", "  ")
-		ioutil.WriteFile(leetmapFile, b, 0644)
+		if err := os.WriteFile(leetmapFile, b, 0644); err != nil {
+			log.Printf("could not create leet map: %v", err)
+		}
 	}
-	data, _ := ioutil.ReadFile(leetmapFile)
-	json.Unmarshal(data, &leetMap)
+	data, err := os.ReadFile(leetmapFile)
+	if err != nil {
+		log.Printf("could not read leet map: %v", err)
+		leetMap = map[string][]string{}
+		return
+	}
+	if err := json.Unmarshal(data, &leetMap); err != nil {
+		log.Printf("could not parse leet map: %v", err)
+		leetMap = map[string][]string{}
+	}
 }
 
 func loadOrCreateConfig() {
-	if _, err := os.Stat(configFile); os.IsNotExist(err) {
-		cfg = Config{
-			PassWordCount:    5,
-			PassSeparator:    "_",
-			PassRandomCase:   true,
-			PassNumbers:      false,
-			PassSymbols:      false,
-			PassLeet:         true,
-			PassLeetProb:     0.50,
-			StringSeparator:  "_",
-			StringRandomCase: true,
-			StringInvertCase: false,
-			StringLeet:       true,
-			StringLeetProb:   0.50,
-		}
+	cfg = defaultConfig()
+
+	data, err := os.ReadFile(configFile)
+	if errors.Is(err, os.ErrNotExist) {
 		saveConfig()
-	} else {
-		data, _ := ioutil.ReadFile(configFile)
-		json.Unmarshal(data, &cfg)
+		return
 	}
+	if err != nil {
+		log.Printf("could not read config, using defaults: %v", err)
+		return
+	}
+
+	next := defaultConfig()
+	if err := json.Unmarshal(data, &next); err != nil {
+		log.Printf("could not parse config, restoring defaults: %v", err)
+		cfg = defaultConfig()
+		saveConfig()
+		return
+	}
+	cfg = normalizeConfig(next)
+	saveConfig()
 }
 
 func saveConfig() {
 	b, _ := json.MarshalIndent(cfg, "", "  ")
-	ioutil.WriteFile(configFile, b, 0644)
+	if err := os.WriteFile(configFile, b, 0644); err != nil {
+		log.Printf("could not save config: %v", err)
+	}
+}
+
+func defaultConfig() Config {
+	return Config{
+		PassWordCount:  5,
+		PassSeparator:  "_",
+		PassRandomCase: true,
+		PassNumbers:    false,
+		PassSymbols:    false,
+		PassLeet:       true,
+		PassLeetProb:   0.50,
+
+		StringSeparator:  "_",
+		StringRandomCase: true,
+		StringInvertCase: false,
+		StringLeet:       true,
+		StringLeetProb:   0.50,
+
+		PassGenLength:           30,
+		PassGenLower:            true,
+		PassGenUpper:            true,
+		PassGenNumber:           true,
+		PassGenSymbol:           true,
+		PassGenInclude:          "",
+		PassGenExclude:          "",
+		PassGenBegin:            "Any",
+		PassGenEnd:              "Any",
+		PassGenExcludeSimilar:   false,
+		PassGenExcludeAmbiguous: false,
+		PassGenNoDuplicate:      true,
+	}
+}
+
+func normalizeConfig(c Config) Config {
+	if c.PassWordCount <= 0 {
+		c.PassWordCount = 5
+	}
+	if c.PassSeparator == "" {
+		c.PassSeparator = "_"
+	}
+	if c.StringSeparator == "" {
+		c.StringSeparator = "_"
+	}
+	if c.PassGenLength <= 0 {
+		c.PassGenLength = 30
+	}
+	if !validBoundaryMode(c.PassGenBegin) {
+		c.PassGenBegin = "Any"
+	}
+	if !validBoundaryMode(c.PassGenEnd) {
+		c.PassGenEnd = "Any"
+	}
+	return c
 }
 
 // ----------------- Helpers -----------------
@@ -386,239 +508,371 @@ func intToStr(v int) string {
 // It matches the visual style of the other tabs and automatically saves settings when changed.
 
 func buildPasswordGeneratorTab(myWindow fyne.Window) fyne.CanvasObject {
-    // Create UI entries and checkboxes with defaults loaded from cfg
-    lengthEntry := widget.NewEntry()
-    lengthEntry.SetText(intToStr(cfg.PassGenLength))
-    lengthEntry.OnChanged = func(s string) {
-        cfg.PassGenLength = strToInt(s, 30)
-        saveConfig()
-    }
+	// Create UI entries and checkboxes with defaults loaded from cfg
+	lengthEntry := widget.NewEntry()
+	lengthEntry.SetText(intToStr(cfg.PassGenLength))
+	lengthEntry.OnChanged = func(s string) {
+		cfg.PassGenLength = strToInt(s, 30)
+		saveConfig()
+	}
 
-    lowercaseCheck := widget.NewCheck("Lowercase (a-z)", func(b bool) {
-        cfg.PassGenLower = b
-        saveConfig()
-    })
-    lowercaseCheck.SetChecked(cfg.PassGenLower)
+	lowercaseCheck := widget.NewCheck("Lowercase (a-z)", func(b bool) {
+		cfg.PassGenLower = b
+		saveConfig()
+	})
+	lowercaseCheck.SetChecked(cfg.PassGenLower)
 
-    uppercaseCheck := widget.NewCheck("Uppercase (A-Z)", func(b bool) {
-        cfg.PassGenUpper = b
-        saveConfig()
-    })
-    uppercaseCheck.SetChecked(cfg.PassGenUpper)
+	uppercaseCheck := widget.NewCheck("Uppercase (A-Z)", func(b bool) {
+		cfg.PassGenUpper = b
+		saveConfig()
+	})
+	uppercaseCheck.SetChecked(cfg.PassGenUpper)
 
-    numbersCheck := widget.NewCheck("Numbers (0-9)", func(b bool) {
-        cfg.PassGenNumber = b
-        saveConfig()
-    })
-    numbersCheck.SetChecked(cfg.PassGenNumber)
+	numbersCheck := widget.NewCheck("Numbers (0-9)", func(b bool) {
+		cfg.PassGenNumber = b
+		saveConfig()
+	})
+	numbersCheck.SetChecked(cfg.PassGenNumber)
 
-    symbolsCheck := widget.NewCheck("Symbols (!@#...)", func(b bool) {
-        cfg.PassGenSymbol = b
-        saveConfig()
-    })
-    symbolsCheck.SetChecked(cfg.PassGenSymbol)
+	symbolsCheck := widget.NewCheck("Symbols (!@#...)", func(b bool) {
+		cfg.PassGenSymbol = b
+		saveConfig()
+	})
+	symbolsCheck.SetChecked(cfg.PassGenSymbol)
 
-    includeEntry := widget.NewEntry()
-    includeEntry.SetText(cfg.PassGenInclude)
-    includeEntry.OnChanged = func(s string) {
-        cfg.PassGenInclude = s
-        saveConfig()
-    }
+	includeEntry := widget.NewEntry()
+	includeEntry.SetText(cfg.PassGenInclude)
+	includeEntry.OnChanged = func(s string) {
+		cfg.PassGenInclude = s
+		saveConfig()
+	}
 
-    excludeEntry := widget.NewEntry()
-    excludeEntry.SetText(cfg.PassGenExclude)
-    excludeEntry.OnChanged = func(s string) {
-        cfg.PassGenExclude = s
-        saveConfig()
-    }
+	excludeEntry := widget.NewEntry()
+	excludeEntry.SetText(cfg.PassGenExclude)
+	excludeEntry.OnChanged = func(s string) {
+		cfg.PassGenExclude = s
+		saveConfig()
+	}
 
-    beginsSelect := widget.NewSelect([]string{"Any", "Letter", "Number"}, func(s string) {
-        cfg.PassGenBegin = s
-        saveConfig()
-    })
-    beginsSelect.SetSelected(cfg.PassGenBegin)
+	beginsSelect := widget.NewSelect([]string{"Any", "Letter", "Number"}, func(s string) {
+		cfg.PassGenBegin = s
+		saveConfig()
+	})
+	beginsSelect.SetSelected(cfg.PassGenBegin)
 
-    endsSelect := widget.NewSelect([]string{"Any", "Letter", "Number"}, func(s string) {
-        cfg.PassGenEnd = s
-        saveConfig()
-    })
-    endsSelect.SetSelected(cfg.PassGenEnd)
+	endsSelect := widget.NewSelect([]string{"Any", "Letter", "Number"}, func(s string) {
+		cfg.PassGenEnd = s
+		saveConfig()
+	})
+	endsSelect.SetSelected(cfg.PassGenEnd)
 
-    excludeSimilarCheck := widget.NewCheck("Exclude Similar (o,0,i,l,1)", func(b bool) {
-        cfg.PassGenExcludeSimilar = b
-        saveConfig()
-    })
-    excludeSimilarCheck.SetChecked(cfg.PassGenExcludeSimilar)
+	excludeSimilarCheck := widget.NewCheck("Exclude Similar (o,0,i,l,1)", func(b bool) {
+		cfg.PassGenExcludeSimilar = b
+		saveConfig()
+	})
+	excludeSimilarCheck.SetChecked(cfg.PassGenExcludeSimilar)
 
-    excludeAmbiguousCheck := widget.NewCheck("Exclude Ambiguous (~,;:.{}<>)", func(b bool) {
-        cfg.PassGenExcludeAmbiguous = b
-        saveConfig()
-    })
-    excludeAmbiguousCheck.SetChecked(cfg.PassGenExcludeAmbiguous)
+	excludeAmbiguousCheck := widget.NewCheck("Exclude Ambiguous (~,;:.{}<>)", func(b bool) {
+		cfg.PassGenExcludeAmbiguous = b
+		saveConfig()
+	})
+	excludeAmbiguousCheck.SetChecked(cfg.PassGenExcludeAmbiguous)
 
-    noDuplicateCheck := widget.NewCheck("No Duplicate Characters", func(b bool) {
-        cfg.PassGenNoDuplicate = b
-        saveConfig()
-    })
-    noDuplicateCheck.SetChecked(cfg.PassGenNoDuplicate)
+	noDuplicateCheck := widget.NewCheck("No Duplicate Characters", func(b bool) {
+		cfg.PassGenNoDuplicate = b
+		saveConfig()
+	})
+	noDuplicateCheck.SetChecked(cfg.PassGenNoDuplicate)
 
-    warningLabel := widget.NewLabel("")
-    warningLabel.Hide()
+	warningLabel := widget.NewLabel("")
+	warningLabel.Hide()
 
-    outputEntry := widget.NewMultiLineEntry()
-    outputEntry.Disable()
+	outputEntry := widget.NewMultiLineEntry()
+	outputEntry.Disable()
 
-    // Generate button logic
-    generateBtn := widget.NewButton("Generate", func() {
-        pass, warn := generatePassword()
-        outputEntry.SetText(pass)
-        if warn != "" {
-            warningLabel.SetText(warn)
-            warningLabel.Show()
-        } else {
-            warningLabel.Hide()
-        }
-    })
+	// Generate button logic
+	generateBtn := widget.NewButton("Generate", func() {
+		pass, warn := generatePassword()
+		outputEntry.SetText(pass)
+		if warn != "" {
+			warningLabel.SetText(warn)
+			warningLabel.Show()
+		} else {
+			warningLabel.Hide()
+		}
+	})
 
-    // Copy button logic
-    copyBtn := widget.NewButton("Copy Text", func() {
-        fyne.CurrentApp().Clipboard().SetContent(outputEntry.Text)
-        dialog.ShowInformation("Copied!", "Password copied to clipboard", myWindow)
-    })
+	// Copy button logic
+	copyBtn := widget.NewButton("Copy Text", func() {
+		fyne.CurrentApp().Clipboard().SetContent(outputEntry.Text)
+		dialog.ShowInformation("Copied!", "Password copied to clipboard", myWindow)
+	})
 
-    form := container.NewVBox(
-        widget.NewLabel("Password Length:"),
-        lengthEntry,
-        lowercaseCheck,
-        uppercaseCheck,
-        numbersCheck,
-        symbolsCheck,
-        widget.NewLabel("Characters to Include:"),
-        includeEntry,
-        widget.NewLabel("Characters to Exclude:"),
-        excludeEntry,
-        widget.NewLabel("Begins With:"),
-        beginsSelect,
-        widget.NewLabel("Ends With:"),
-        endsSelect,
-        excludeSimilarCheck,
-        excludeAmbiguousCheck,
-        noDuplicateCheck,
-        warningLabel,
-        container.NewHBox(generateBtn, copyBtn),
-        outputEntry,
-    )
+	form := container.NewVBox(
+		widget.NewLabel("Password Length:"),
+		lengthEntry,
+		lowercaseCheck,
+		uppercaseCheck,
+		numbersCheck,
+		symbolsCheck,
+		widget.NewLabel("Characters to Include:"),
+		includeEntry,
+		widget.NewLabel("Characters to Exclude:"),
+		excludeEntry,
+		widget.NewLabel("Begins With:"),
+		beginsSelect,
+		widget.NewLabel("Ends With:"),
+		endsSelect,
+		excludeSimilarCheck,
+		excludeAmbiguousCheck,
+		noDuplicateCheck,
+		warningLabel,
+		container.NewHBox(generateBtn, copyBtn),
+		outputEntry,
+	)
 
-    return form
+	return form
 }
 
 // ----------------- Password Generator Logic -----------------
 // Builds the password string according to all user settings in cfg.
 func generatePassword() (string, string) {
-    length := cfg.PassGenLength
-    if length <= 0 {
-        length = 30
-    }
+	length := cfg.PassGenLength
+	if length <= 0 {
+		length = 30
+	}
 
-    // Character pools
-    lowercase := []rune("abcdefghijklmnopqrstuvwxyz")
-    uppercase := []rune("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
-    numbers := []rune("0123456789")
-    symbols := []rune("!@#$%^&*()-_=+[]{};:,.<>?/\\|")
+	pool := filteredPasswordPool()
+	if len(pool) == 0 {
+		return "", "Select at least one character class or add included characters."
+	}
 
-    // Similar and ambiguous exclusions
-    similar := []rune{'o', 'O', '0', 'i', 'I', 'l', '1'}
-    ambiguous := []rune{'~', ';', ':', '.', '{', '}', '<', '>', '[', ']', '(', ')', '/', '\\', '\'', '`'}
+	if cfg.PassGenNoDuplicate {
+		pool = uniqueRunes(pool)
+		if len(pool) < length {
+			return "", "No Duplicate: not enough unique characters for the selected length."
+		}
+	}
 
-    // Build pool based on user choices
-    var pool []rune
-    if cfg.PassGenLower {
-        pool = append(pool, lowercase...)
-    }
-    if cfg.PassGenUpper {
-        pool = append(pool, uppercase...)
-    }
-    if cfg.PassGenNumber {
-        pool = append(pool, numbers...)
-    }
-    if cfg.PassGenSymbol {
-        pool = append(pool, symbols...)
-    }
-    if cfg.PassGenInclude != "" {
-        pool = append(pool, []rune(cfg.PassGenInclude)...)
-    }
+	beginPool, err := boundaryPool(cfg.PassGenBegin, pool)
+	if err != nil {
+		return "", err.Error()
+	}
+	endPool, err := boundaryPool(cfg.PassGenEnd, pool)
+	if err != nil {
+		return "", err.Error()
+	}
+	if length == 1 && cfg.PassGenBegin != "Any" && cfg.PassGenEnd != "Any" && cfg.PassGenBegin != cfg.PassGenEnd {
+		return "", "Length 1 cannot satisfy different begins-with and ends-with rules."
+	}
 
-    // Apply exclusions
-    excludeSet := make(map[rune]bool)
-    for _, r := range cfg.PassGenExclude {
-        excludeSet[r] = true
-    }
-    if cfg.PassGenExcludeSimilar {
-        for _, r := range similar {
-            excludeSet[r] = true
-        }
-    }
-    if cfg.PassGenExcludeAmbiguous {
-        for _, r := range ambiguous {
-            excludeSet[r] = true
-        }
-    }
+	result := make([]rune, 0, length)
+	available := append([]rune(nil), pool...)
+	for len(result) < length {
+		ch, err := pickRune(available)
+		if err != nil {
+			return "", "Unable to generate password with the selected settings."
+		}
+		result = append(result, ch)
+		if cfg.PassGenNoDuplicate {
+			available = removeRune(available, ch)
+		}
+	}
 
-    // Filter final pool
-    filtered := make([]rune, 0, len(pool))
-    for _, r := range pool {
-        if !excludeSet[r] {
-            filtered = append(filtered, r)
-        }
-    }
+	if cfg.PassGenBegin != "Any" {
+		ch, err := pickRune(beginPool)
+		if err != nil {
+			return "", "Unable to satisfy begins-with rule."
+		}
+		if cfg.PassGenNoDuplicate {
+			result, err = replaceUniqueAt(result, 0, ch, beginPool)
+			if err != nil {
+				return "", err.Error()
+			}
+		} else {
+			result[0] = ch
+		}
+	}
 
-    // Handle too-short pool when No Duplicate is enabled
-    var warn string
-    if cfg.PassGenNoDuplicate && len(filtered) < length {
-        cfg.PassGenNoDuplicate = false
-        saveConfig()
-        warn = "No Duplicate disabled (not enough unique characters)."
-    }
+	if cfg.PassGenEnd != "Any" {
+		ch, err := pickRune(endPool)
+		if err != nil {
+			return "", "Unable to satisfy ends-with rule."
+		}
+		index := len(result) - 1
+		if cfg.PassGenNoDuplicate {
+			next, err := replaceUniqueAt(result, index, ch, endPool)
+			if err != nil {
+				return "", err.Error()
+			}
+			result = next
+		} else {
+			result[index] = ch
+		}
+	}
 
-    // Build password
-    var result []rune
-    for len(result) < length {
-        ch := filtered[rand.Intn(len(filtered))]
-        if cfg.PassGenNoDuplicate && runeInSlice(ch, result) {
-            continue
-        }
-        result = append(result, ch)
-    }
+	return string(result), ""
+}
 
-    // Apply Begins With / Ends With
-    if cfg.PassGenBegin == "Letter" {
-        result[0] = randomLetter()
-    } else if cfg.PassGenBegin == "Number" {
-        result[0] = numbers[rand.Intn(len(numbers))]
-    }
+func filteredPasswordPool() []rune {
+	var pool []rune
+	if cfg.PassGenLower {
+		pool = append(pool, []rune(lowercaseChars)...)
+	}
+	if cfg.PassGenUpper {
+		pool = append(pool, []rune(uppercaseChars)...)
+	}
+	if cfg.PassGenNumber {
+		pool = append(pool, []rune(numberChars)...)
+	}
+	if cfg.PassGenSymbol {
+		pool = append(pool, []rune(passwordSymbolChars)...)
+	}
+	pool = append(pool, []rune(cfg.PassGenInclude)...)
 
-    if cfg.PassGenEnd == "Letter" {
-        result[len(result)-1] = randomLetter()
-    } else if cfg.PassGenEnd == "Number" {
-        result[len(result)-1] = numbers[rand.Intn(len(numbers))]
-    }
+	excludeSet := make(map[rune]bool)
+	for _, r := range cfg.PassGenExclude {
+		excludeSet[r] = true
+	}
+	if cfg.PassGenExcludeSimilar {
+		for _, r := range similarChars {
+			excludeSet[r] = true
+		}
+	}
+	if cfg.PassGenExcludeAmbiguous {
+		for _, r := range ambiguousChars {
+			excludeSet[r] = true
+		}
+	}
 
-    return string(result), warn
+	filtered := make([]rune, 0, len(pool))
+	for _, r := range pool {
+		if !excludeSet[r] {
+			filtered = append(filtered, r)
+		}
+	}
+	return filtered
+}
+
+func boundaryPool(mode string, pool []rune) ([]rune, error) {
+	switch mode {
+	case "", "Any":
+		return pool, nil
+	case "Letter":
+		letters := filterRunes(pool, isLetter)
+		if len(letters) == 0 {
+			return nil, errors.New("Begins/ends-with Letter requires at least one available letter.")
+		}
+		return letters, nil
+	case "Number":
+		numbers := filterRunes(pool, isNumber)
+		if len(numbers) == 0 {
+			return nil, errors.New("Begins/ends-with Number requires at least one available number.")
+		}
+		return numbers, nil
+	default:
+		return pool, nil
+	}
+}
+
+func replaceUniqueAt(result []rune, index int, preferred rune, pool []rune) ([]rune, error) {
+	if result[index] == preferred || !runeInSlice(preferred, result) {
+		result[index] = preferred
+		return result, nil
+	}
+
+	candidates := uniqueRunes(pool)
+	for _, candidate := range candidates {
+		if !runeInSlice(candidate, result) {
+			result[index] = candidate
+			return result, nil
+		}
+	}
+	return nil, errors.New("No Duplicate cannot satisfy the selected begins/ends-with rule.")
+}
+
+func validBoundaryMode(mode string) bool {
+	return mode == "" || mode == "Any" || mode == "Letter" || mode == "Number"
+}
+
+func filterRunes(pool []rune, keep func(rune) bool) []rune {
+	var filtered []rune
+	for _, r := range pool {
+		if keep(r) {
+			filtered = append(filtered, r)
+		}
+	}
+	return filtered
+}
+
+func isLetter(r rune) bool {
+	return ('a' <= r && r <= 'z') || ('A' <= r && r <= 'Z')
+}
+
+func isNumber(r rune) bool {
+	return '0' <= r && r <= '9'
+}
+
+func uniqueRunes(pool []rune) []rune {
+	seen := make(map[rune]bool, len(pool))
+	unique := make([]rune, 0, len(pool))
+	for _, r := range pool {
+		if seen[r] {
+			continue
+		}
+		seen[r] = true
+		unique = append(unique, r)
+	}
+	return unique
+}
+
+func removeRune(pool []rune, remove rune) []rune {
+	for i, r := range pool {
+		if r == remove {
+			return append(pool[:i], pool[i+1:]...)
+		}
+	}
+	return pool
 }
 
 // ----------------- Helper Functions -----------------
 func runeInSlice(r rune, s []rune) bool {
-    for _, x := range s {
-        if x == r {
-            return true
-        }
-    }
-    return false
+	for _, x := range s {
+		if x == r {
+			return true
+		}
+	}
+	return false
 }
 
-func randomLetter() rune {
-    if rand.Intn(2) == 0 {
-        return rune('a' + rand.Intn(26))
-    }
-    return rune('A' + rand.Intn(26))
+func pickRune(pool []rune) (rune, error) {
+	index, err := secureRandInt(len(pool))
+	if err != nil {
+		return 0, err
+	}
+	return pool[index], nil
+}
+
+func secureRandBool() (bool, error) {
+	n, err := secureRandInt(2)
+	return n == 0, err
+}
+
+func secureRandFloat64() (float64, error) {
+	n, err := secureRandInt(1_000_000)
+	if err != nil {
+		return 0, err
+	}
+	return float64(n) / 1_000_000, nil
+}
+
+func secureRandInt(max int) (int, error) {
+	if max <= 0 {
+		return 0, fmt.Errorf("invalid random max: %d", max)
+	}
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(max)))
+	if err != nil {
+		return 0, err
+	}
+	return int(n.Int64()), nil
 }
